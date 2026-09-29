@@ -25,6 +25,7 @@ import signal
 import socket
 import struct
 import subprocess
+import sys
 import threading
 import time
 import webbrowser
@@ -231,6 +232,13 @@ def _npm_global_roots() -> list[Path]:
     return deduped
 
 
+def _profile_local_dsh() -> Path | None:
+    candidate = Path.home() / ".dsh" / "profiles" / "web" / "node_modules" / ".bin" / (
+        "dsh.cmd" if os.name == "nt" else "dsh"
+    )
+    return candidate if candidate.is_file() else None
+
+
 def _find_launch_command(port: int = DEFAULT_PORT) -> list[str] | None:
     """级联解析 dsh 启动命令；找不到返回 None。
 
@@ -244,6 +252,10 @@ def _find_launch_command(port: int = DEFAULT_PORT) -> list[str] | None:
         if _supports_no_open(base_command):
             tail.append("--no-open")
         return _wrap_cmd([*base_command, *tail])
+
+    profile_bin = _profile_local_dsh()
+    if profile_bin is not None:
+        return _finish([str(profile_bin)])
 
     # 1) PATH 上的 dsh（各包管理器全局安装）
     dsh = _which("dsh")
@@ -470,13 +482,32 @@ def _parse_proc_net_tcp(text: str) -> dict[int, int]:
     return ports
 
 
-def _posix_listener_pids(port: int) -> list[int]:
-    """POSIX 监听进程反查：/proc/net/tcp 拿 inode → /proc/*/fd 找属主。
+def _parse_lsof_pids(text: str) -> list[int]:
+    pids: list[int] = []
+    for line in str(text or "").splitlines():
+        try:
+            pid = int(line.strip())
+        except ValueError:
+            continue
+        if pid > 0 and pid not in pids:
+            pids.append(pid)
+    return pids
 
-    Linux 上纯 stdlib 可完成；macOS 没有 /proc，这里返回空列表（找不到 =
-    回到 ``not-running`` 的安全分支，绝不猜 PID 去杀）。macOS 上的停止/重启
-    因此不可用，这一点写在 README 里而不是猜一个进程。
-    """
+
+def _macos_listener_pids(port: int) -> list[int]:
+    result = subprocess.run(
+        ["/usr/sbin/lsof", "-nP", f"-tiTCP:{int(port)}", "-sTCP:LISTEN"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode not in (0, 1):
+        return []
+    return _parse_lsof_pids(result.stdout)
+
+
+def _posix_listener_pids(port: int) -> list[int]:
+    """POSIX 监听进程反查：macOS 用 lsof，Linux 用 /proc socket inode。"""
+    if sys.platform == "darwin":
+        return _macos_listener_pids(port)
     try:
         table = Path("/proc/net/tcp").read_text(encoding="utf-8")
     except OSError:
@@ -512,6 +543,16 @@ def listener_pids(port: int) -> list[int]:
         return []
 
 
+def _macos_process_command_line(pid: int) -> str | None:
+    result = subprocess.run(
+        ["/bin/ps", "-p", str(int(pid)), "-o", "command="],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode != 0:
+        return None
+    return (result.stdout or "").strip() or None
+
+
 def process_command_line(pid: int) -> str | None:
     """读取进程命令行（身份核验用）。读不到返回 None（不猜、不杀）。"""
     if pid <= 0:
@@ -530,6 +571,8 @@ def process_command_line(pid: int) -> str | None:
             if result.returncode != 0:
                 return None
             return (result.stdout or "").strip() or None
+        if sys.platform == "darwin":
+            return _macos_process_command_line(pid)
         return Path(f"/proc/{int(pid)}/cmdline").read_bytes().replace(
             b"\x00", b" "
         ).decode("utf-8", "replace").strip() or None

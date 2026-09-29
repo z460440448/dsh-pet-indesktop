@@ -23,9 +23,30 @@ def test_harness_port_probe():
     assert is_running(port) is False
 
 
+def test_find_launch_command_prefers_profile_local_dsh(monkeypatch, tmp_path):
+    from pet import harness_launcher as hl
+
+    local_bin = tmp_path / ".dsh" / "profiles" / "web" / "node_modules" / ".bin" / (
+        "dsh.cmd" if os.name == "nt" else "dsh"
+    )
+    local_bin.parent.mkdir(parents=True)
+    local_bin.write_text("", encoding="utf-8")
+    monkeypatch.setattr(hl, "_profile_local_dsh", lambda: local_bin)
+    monkeypatch.setattr(hl, "_which", lambda _name: "/global/dsh")
+    monkeypatch.setattr(hl, "_supports_no_open", lambda base: False)
+
+    command = hl._find_launch_command()
+
+    if os.name == "nt":
+        assert command == ["cmd.exe", "/d", "/s", "/c", str(local_bin), "web", "--host", "127.0.0.1", "--port", "38080"]
+    else:
+        assert command == [str(local_bin), "web", "--host", "127.0.0.1", "--port", "38080"]
+
+
 def test_find_launch_command_resolves_web(monkeypatch):
     from pet import harness_launcher as hl
 
+    monkeypatch.setattr(hl, "_profile_local_dsh", lambda: None)
     monkeypatch.setattr(hl, "_which", lambda name: "dsh" if name == "dsh" else None)
 
     monkeypatch.setattr(hl, "_supports_no_open", lambda base: True)
@@ -45,6 +66,7 @@ def test_find_launch_command_fallback_without_dsh(monkeypatch):
     node = shutil.which("node")
     if not node:
         return  # 本机没有 node，跳过该场景
+    monkeypatch.setattr(hl, "_profile_local_dsh", lambda: None)
     monkeypatch.setattr(hl, "_supports_no_open", lambda base: False)
     monkeypatch.setenv("PATH", str(Path(node).parent))
     command = hl._find_launch_command()

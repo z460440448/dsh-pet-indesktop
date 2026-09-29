@@ -744,6 +744,9 @@ class TestHarnessGlobalRoots:
         monkeypatch.setattr(node_runtime, "_is_windows", lambda: False)
         monkeypatch.setattr(node_runtime, "_home", lambda: home)
         monkeypatch.setattr(node_runtime, "_POSIX_ABS_NODE_MODULES", ())
+        # _profile_local_dsh() 排在 PATH/全局根之前：开发机装了 profile 本地 dsh 时
+        # 真实路径会先命中，夹具就不再决定结果。清空它以只暴露全局根发现这一条语义。
+        monkeypatch.setattr(hl, "_profile_local_dsh", lambda: None)
         monkeypatch.setattr(
             hl, "_which", lambda name: "/usr/local/bin/node" if name == "node" else None
         )
@@ -768,6 +771,8 @@ class TestHarnessGlobalRoots:
         root = _dir(tmp_path / "nvm" / "v18.20.5" / "node_modules")
         bin_js = _file(root / "@deepseek-ai" / "dsh" / "lib" / "bin.js", "//")
         monkeypatch.setattr(hl, "global_node_modules_roots", lambda: [root])
+        # 同上：profile 本地 dsh 优先级最高，先清空才能只断言全局根发现。
+        monkeypatch.setattr(hl, "_profile_local_dsh", lambda: None)
         # 静态候选根（%APPDATA%\npm 等）取自真实环境变量：开发机若装了全局 dsh，
         # 真实路径会先于本用例的 nvm 夹具命中，用例就不再只依赖夹具（CI 机器没有
         # 全局 dsh，故此缺陷只在本地暴露）。与同文件 POSIX 用例一致地清空静态

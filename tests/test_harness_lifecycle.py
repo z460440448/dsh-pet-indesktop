@@ -63,6 +63,33 @@ def test_parse_proc_net_tcp_keeps_only_listeners():
     assert hl._parse_proc_net_tcp(text) == {38080: 12345}
 
 
+def test_parse_lsof_pids_deduplicates_valid_rows():
+    assert hl._parse_lsof_pids("9773\n9773\n42\ninvalid\n0\n") == [9773, 42]
+
+
+def test_macos_listener_pids_uses_system_lsof(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return type("Result", (), {"returncode": 0, "stdout": "9773\n", "stderr": ""})()
+
+    monkeypatch.setattr(hl.subprocess, "run", fake_run)
+    assert hl._macos_listener_pids(38080) == [9773]
+    assert calls[0][0] == ["/usr/sbin/lsof", "-nP", "-tiTCP:38080", "-sTCP:LISTEN"]
+
+
+def test_macos_process_command_line_uses_ps(monkeypatch):
+    monkeypatch.setattr(
+        hl.subprocess,
+        "run",
+        lambda command, **kwargs: type(
+            "Result", (), {"returncode": 0, "stdout": "node /tmp/dsh web --port 38080\n", "stderr": ""}
+        )(),
+    )
+    assert hl._macos_process_command_line(9773) == "node /tmp/dsh web --port 38080"
+
+
 # ------------------------------------------------------------ 只读反查
 def test_listener_pids_finds_real_listener_socket():
     """真实监听套接字必须能反查到本进程（宽预算轮询，不赌表刷新时机）。
